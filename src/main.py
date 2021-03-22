@@ -12,6 +12,7 @@ from timer import EasyTimer as Timer
 
 
 t_star = 0.22503650524036528
+r_bar = 2.2085976600646973
 
 
 def make_cumulative(x):
@@ -65,6 +66,9 @@ def clean_binaries(data):
 
     print(f"Masking {len(valid) - np.sum(valid)} Invalid Binaries.")
 
+    # incorrect r_i in binaries has to be corrected
+    data["ri"] = r_bar ** 2 * data["ri"]
+
     return mask_dict(data, valid)
 
 
@@ -117,10 +121,11 @@ def tlm(path, time, which="all", clean=True):
     return t, l, m
 
 
-def save_plot(clean, which, time, name, fmt="pdf"):
+def save_plot(clean, which, time, name, fmt="png"):
     if time is None:
         time = ""
-    path = Path("plots") / Path(f"{'clean' if clean else 'raw'}{which}{time}{name}.{fmt}")
+    path = Path("plots_new") / Path(f"{'clean' if clean else 'raw'}{which}{time}{name}.{fmt}")
+    print(f"Saving plot '{path}'...")
     plt.savefig(path)
 
 
@@ -253,12 +258,19 @@ def radial_hist(path, time, clean=True, save=True):
     plt.axvline(x=smean, alpha=0.3, color="C0")
     plt.axvline(x=bmean, alpha=0.3, color="C1")
 
-    ax1.hist((sdata["ri"], bdata["ri"]), bins=500, stacked=True)
+    r_max = 75
+    smask = sdata["ri"] <= r_max
+    bmask = bdata["ri"] <= r_max
+
+
+    ax1.hist((sdata["ri"][smask], bdata["ri"][bmask]), bins=500, stacked=True)
     ax1.set_xlabel("Distance from Center in pc")
     ax1.set_ylabel("Number of Stars")
 
     plt.title(f"Stacked Histogram at $t = {1e-3 * t_star * time:.1f}$Gyr")
     plt.legend([rf"$\mu_{{all}} = {amean:.2f}$pc", rf"$\mu_S = {smean:.2f}$pc", rf"$\mu_B = {bmean:.2f}$pc", "Singles", "Binaries"])
+
+    plt.xlim(0, 75)
 
     fig.tight_layout()
 
@@ -297,30 +309,53 @@ def mass_dist(path, time, clean=True, save=True):
         save_plot(clean, "all", time, "mdist")
 
 
-def mass_seg(path, time, clean=True, save=True):
+def mass_seg(path, time, which="all", clean=True, save=True):
     # mass segregation: stars in the center are more massive than stars outside
     bdata, sdata = init_data(path, time, which="all", clean=clean)
 
-    masses = np.concatenate((bdata["m1"] + bdata["m2"], sdata["m"]))
-    radii = np.concatenate((bdata["ri"], sdata["ri"]))
+    if which == "all":
+        masses = np.concatenate((bdata["m1"] + bdata["m2"], sdata["m"]))
+        radii = np.concatenate((bdata["ri"], sdata["ri"]))
+    elif which == "singles":
+        masses = sdata["m"]
+        radii = sdata["ri"]
+    else:
+        masses = bdata["m1"] + bdata["m2"]
+        radii = bdata["ri"]
+
+    if which == "singles" or which == "all":
+        plt.scatter(sdata["m"], sdata["ri"], marker=".", s=1, label="Singles", color="C0")
+
+    if which == "binaries" or which == "all":
+        plt.scatter(bdata["m1"] + bdata["m2"], bdata["ri"], marker=".", s=1, label="Binaries", color="C1")
 
     def fit_func(x, a, b):
         return a * x ** b
 
-    popt, pcov = curve_fit(fit_func, masses, radii)
-
-    plt.scatter(sdata["m"], sdata["ri"], marker=".", s=1, label="Singles", color="C0")
-    plt.scatter(bdata["m1"] + bdata["m2"], bdata["ri"], marker=".", s=1, label="Binaries", color="C1")
-
     x = np.logspace(np.log10(np.min(masses)), np.log10(np.max(masses)), 1000, base=10)
 
-    plt.plot(x, fit_func(x, *popt), label="Trend", color="C2")
+    if which == "singles" or which == "all":
+        popt, pcov = curve_fit(fit_func, sdata["m"], sdata["ri"])
+        plt.plot(x, fit_func(x, *popt), label="Singles Trend", color="C0")
+
+    if which == "binaries" or which == "all":
+        popt, pcov = curve_fit(fit_func, bdata["m1"] + bdata["m2"], bdata["ri"])
+        plt.plot(x, fit_func(x, *popt), label="Binaries Trend", color="C1")
+
+    if which == "all":
+        popt, pcov = curve_fit(fit_func, masses, radii)
+        plt.plot(x, fit_func(x, *popt), label="Overall Trend", color="C2")
 
     plt.xlabel(r"$M / M_{\odot}$")
     plt.ylabel(r"Distance from Center / pc")
 
-    plt.title("Mass Segregation")
-    plt.legend(loc="lower right")
+    if time < 10000:
+        t = f"$t={t_star * time:.1f}$Myr"
+    else:
+        t = f"$t={1e-3 * t_star * time:.1f}$Gyr"
+
+    plt.title(f"Mass Segregation at {t}")
+    plt.legend(loc="upper right")
 
     plt.xscale("log")
     plt.yscale("log")
@@ -329,7 +364,6 @@ def mass_seg(path, time, clean=True, save=True):
 
     if save:
         save_plot(clean, "all", time, "mseg")
-        save_plot(clean, "all", time, "mseg_preview", "png")
 
 
 
@@ -587,7 +621,7 @@ def follow_star_hrd(path, times, name, which="singles", clean=True, save=True):
     te = []
     l = []
 
-    # assume the star exists at times[0]
+    # assume the star exists at all times
     for time in times:
         bdata, sdata = init_data(path, time, which, clean)
 
@@ -609,9 +643,7 @@ def follow_star_hrd(path, times, name, which="singles", clean=True, save=True):
                 te.append(bdata["te2"][i])
                 l.append(bdata["zl2"][i])
 
-
-    # plt.plot(te, l, )
-    plt.scatter(te, l, marker=".", c=1e-3 * t_star * times)
+    plt.scatter(te, l, marker=".", s=10, c=1e-3 * t_star * times)
     plt.xlabel(r"$\log_{10} T_{eff}$")
     plt.ylabel(r"$\log_{10} L / L_{\odot}$")
 
@@ -623,6 +655,34 @@ def follow_star_hrd(path, times, name, which="singles", clean=True, save=True):
 
     if save:
         save_plot(clean, which, None, "path")
+        np.save("te.npy", te)
+        np.save("l.npy", l)
+
+
+
+def radial_test(path, time, clean=True, save=True):
+    bdata, sdata = init_data(path, time, which="all", clean=clean)
+
+    print(bdata["name1"].shape, bdata["ri"].shape)
+
+    bri = np.array(bdata["ri"]) / 100
+    # bri = np.array(bdata["ri"])
+
+    x = np.linspace(0, len(sdata["time"]), len(sdata["time"]))
+
+    plt.scatter(x, sdata["ri"], color="C0", marker=".", s=0.5)
+
+    x = np.linspace(0, len(sdata["time"]), len(bdata["name1"]))
+
+    plt.scatter(x, bri, color="C1", marker=".", s=0.5)
+    plt.scatter(x, bri, color="C1", marker=".", s=0.5)
+
+    plt.yscale("log")
+
+
+    if save:
+        save_plot(clean, "all", time, "rtest")
+
 
 
 def main(argv: list) -> int:
@@ -635,14 +695,31 @@ def main(argv: list) -> int:
     # use large figures
     matplotlib.rcParams.update({"figure.figsize": (10, 9)})
 
-    # HRD
-    # times = [0, 66830]
+
+    # radial_test(path, 0)
+    # plt.close()
+
+    # times = [10, 20, 30, 40, 50, 100, 150, 200, 250, 300, 400, 500, 600, 700, 800, 900, 1000, 10000, 20000, 30000, 40000, 53330]
 
     # for time in times:
-    #     stellar_types(path, time)
+    #     mass_seg(path, time)
+    #     plt.close()
+
+    # HRD
+    # times = [0, 53330]
+
+    # for time in times:
+    #     hrd(path, time, which="singles", clean=False)
+    #     plt.close()
+    #     # stellar_types(path, time)
+    #     # plt.close()
+    #     radial_hist(path, time)
     #     plt.close()
     #     mass_dist(path, time)
     #     plt.close()
+    #     mass_seg(path, time)
+    #     plt.close()
+
 
     # which = ["all", "singles", "binaries"]
     # clean = [True, False]
@@ -655,36 +732,79 @@ def main(argv: list) -> int:
     # binary fraction over time
 
     # only every 10th file was reconstructed
-    # times = 10 * np.linspace(0, 6683, 400, dtype=int)
+    # times = 10 * np.linspace(0, 5333, 400, dtype=int)
 
     # fig = binary_fraction(path, times)
     # plt.close(fig)
     
-    times = 10 * np.linspace(0, 6683, 6, dtype=int)
-    for time in times:
-        # radial_hist(path, time)
-        # plt.close()
-        # radial_cfractions(path, time)
-        # plt.close()
-        # radial_remnants(path, time)
-        # plt.close()
-        # semi_ri2d(path, time)
-        # plt.close()
-        mass_seg(path, time)
-        plt.close()
+    # times = 10 * np.linspace(0, 5333, 10, dtype=int)
+    # for time in times:
+    #     radial_cfractions(path, time)
+    #     plt.close()
+    #     radial_remnants(path, time)
+    #     plt.close()
 
-    # times = 10 * np.linspace(0, 6683, 200, dtype=int)
+    # times = 10 * np.linspace(0, 5333, 200, dtype=int)
     # lagrange_radii(path, times, fraction=0.01)
 
 
-    # _, sdata = init_data(path, 66830)
 
-    # for i in range(len(sdata["time"])):
-    #     print(sdata["kw"][i], sdata["name"][i])
+    # find eligible stars to follow
 
-    # name = 31117
-    # times = 10 * np.linspace(0, 6683, 1000, dtype=int)
-    # follow_star_hrd(path, times, name)
+    # _, sdata = init_data(path, 0)
+
+    # kw0 = np.array(sdata["kw"])
+    # name0 = np.array(sdata["name"])
+    # teff0 = np.array(sdata["te"])
+
+    # crit = teff0 < 3.78
+
+    # kw0, name0 = kw0[crit], name0[crit]
+
+    # sort = np.argsort(name0)
+    # kw0, name0 = kw0[sort], name0[sort]
+
+    # crit = kw0 == 1
+
+    # kw0, name0 = kw0[crit], name0[crit]
+
+    # _, sdata = init_data(path, 53330)
+
+    # kw1 = np.array(sdata["kw"])
+    # name1 = np.array(sdata["name"])
+    # teff1 = np.array(sdata["te"])
+
+    # crit = teff1 < 3.78
+    # kw1, name1 = kw1[crit], name1[crit]
+
+    # sort = np.argsort(name1)
+    # kw1, name1 = kw1[sort], name1[sort]
+
+    # crit = kw1 == 11
+
+    # kw1, name1 = kw1[crit], name1[crit]
+
+
+    # survived = np.array([i for i in name0 if i in name1])
+
+    # for name in survived:
+    #     i0 = np.argmax(name0 == name)
+    #     i1 = np.argmax(name1 == name)
+
+    #     print(kw0[i0], name0[i0], kw1[i1], name1[i1])
+
+
+    # manually select a star and follow it
+
+    name = 30500
+    times = 10 * np.linspace(0, 5333, 5000, dtype=int)
+
+    # for time in times:
+    #     p = path / Path("sev.83_" + str(time))
+    #     if not p.is_file():
+    #         fetch_single(p)
+
+    follow_star_hrd(path, times, name, clean=False)
 
     return 0
 

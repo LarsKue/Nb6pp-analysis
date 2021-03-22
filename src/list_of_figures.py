@@ -1,7 +1,7 @@
 
 from pathlib import Path
 
-plots = Path("plots/")
+plots = Path("plots_new/")
 
 
 def make_figure_string(name):
@@ -16,5 +16,5 @@ def make_figure_string(name):
 
 
 with open("output.tex", "w+") as f:
-    for p in plots.glob("*.pdf"):
+    for p in plots.glob("*.png"):
         f.write(make_figure_string(p.name))
